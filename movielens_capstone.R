@@ -12,6 +12,7 @@ if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.
 # https://grouplens.org/datasets/movielens/10m/
 # http://files.grouplens.org/datasets/movielens/ml-10m.zip
 
+<<<<<<< HEAD
 if(!exists("movies") && !exists("ratings")) {
   f_movies <- "ml-10M100K/ratings.dat"
   f_ratings <- "ml-10M100K/movies.dat"
@@ -32,11 +33,28 @@ if(!exists("movies") && !exists("ratings")) {
   }
 }
 
+=======
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings <- fread(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                 col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+>>>>>>> b91d7b0115820866324f7ffe8767a28b3989044e
 
 # if using R 3.6 or earlier
 movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(levels(movieId))[movieId],
                                            title = as.character(title),
                                            genres = as.character(genres))
+<<<<<<< HEAD
+=======
+# if using R 4.0 or later (I have R 3.6)
+#movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(movieId),
+#                                           title = as.character(title),
+#                                           genres = as.character(genres))
+>>>>>>> b91d7b0115820866324f7ffe8767a28b3989044e
 
 movielens <- left_join(ratings, movies, by = "movieId")
 
@@ -50,8 +68,12 @@ temp <- movielens[test_index,]
 # Make sure userId and movieId in validation set are also in edx set
 validation <- temp %>% 
   semi_join(edx, by = "movieId") %>%
+<<<<<<< HEAD
   semi_join(edx, by = "userId") %>%
   semi_join(edx, by = "genres")
+=======
+  semi_join(edx, by = "userId")
+>>>>>>> b91d7b0115820866324f7ffe8767a28b3989044e
 
 # Add rows removed from validation set back into edx set
 removed <- anti_join(temp, validation)
@@ -92,8 +114,12 @@ average_rmse <- RMSE(test_set$rating, mu)
 #create a table to hold the results
 rmse_results <- data_frame(method = "Average", RMSE = average_rmse)
 
+<<<<<<< HEAD
 # Movie Effects
 # Different movies have very different average ratings
+=======
+# Different movies have very different ratings
+>>>>>>> b91d7b0115820866324f7ffe8767a28b3989044e
 movie_avg_ratings <- train_set %>% group_by(movieId) %>% summarize(avg = mean(rating))
 # Here's what the skew looks like
 movie_avg_ratings %>% ggplot(aes(avg)) + geom_histogram()
@@ -105,6 +131,7 @@ movie_avg_ratings %>% ggplot(aes(avg)) + geom_histogram()
 # by taking the mean rating for each film and subtracting the overall mean rating
 movie_bias <- train_set %>% group_by(movieId) %>% summarize(b_i = mean(rating - mu))
 
+<<<<<<< HEAD
 # incorporate our movie bias into our predicted rating
 predicted_ratings_movie_effect <- mu + test_set %>% left_join(movie_bias, by = "movieId") %>% .$b_i
 
@@ -144,6 +171,8 @@ rmse_results %>% knitr::kable()
 # There could be some further effects of movie and user bias that we can minimize
 # We'll start by looking at the highest and lowest rated movies
 
+=======
+>>>>>>> b91d7b0115820866324f7ffe8767a28b3989044e
 # Add the movie titles so we can tell which movies have the highest and lowest bias
 movie_titles <- edx %>%
   select(movieId, title) %>%
@@ -166,7 +195,11 @@ movie_bias %>% left_join(movie_titles, by="movieId") %>%
 # The movies with the highest b_i don't match expectations.
 # IMDb's Top 250 films are nowhere on this list (https://www.imdb.com/chart/top/)
 
+<<<<<<< HEAD
 # Looking closer, we see titles with highest positive b_i (best movies) also have few votes
+=======
+# Looking closer, we see titles with highest b_i also have few votes
+>>>>>>> b91d7b0115820866324f7ffe8767a28b3989044e
 train_set %>% dplyr::count(movieId) %>% 
   left_join(movie_bias) %>%
   left_join(movie_titles, by="movieId") %>%
@@ -175,10 +208,13 @@ train_set %>% dplyr::count(movieId) %>%
   slice(1:10) %>% 
   knitr::kable()
 
+<<<<<<< HEAD
 # The titles with the highest negative b_i (worst movies) also have few votes
 # Note: with the exception of From Justin to Kelly, which is widely regared as
 # one of the worst films ever made 
 # (https://en.wikipedia.org/wiki/List_of_films_considered_the_worst#From_Justin_to_Kelly_(2003))
+=======
+>>>>>>> b91d7b0115820866324f7ffe8767a28b3989044e
 train_set %>% dplyr::count(movieId) %>% 
   left_join(movie_bias) %>%
   left_join(movie_titles, by="movieId") %>%
@@ -187,6 +223,7 @@ train_set %>% dplyr::count(movieId) %>%
   slice(1:10) %>% 
   knitr::kable()
 
+<<<<<<< HEAD
 # This is the rationale for using regularization.  
 # TODO: Look for a concise rationale (ex: regularization with penalize films with only a small number of ratings)
 
@@ -196,12 +233,61 @@ lambda <- 3
 
 # Adding our lamdba to the denominator pulls the average towards zero for films with few ratings
 # but has a marginal effect on films with many ratings
+=======
+
+movie_bias
+
+predicted_ratings <- mu + test_set %>% left_join(movie_bias, by = "movieId") %>% .$b_i
+
+movie_avg_rmse <- RMSE(test_set$rating, predicted_ratings)
+
+# movie_avg_rmse [0.94]
+
+rmse_results <- bind_rows(rmse_results, data_frame(method = "Movie Effects Model", 
+                                                   RMSE = movie_avg_rmse))
+rmse_results %>% knitr::kable()
+
+predicted_ratings <- test_set %>% left_join(movie_bias, by = "movieId") %>%
+  left_join(genre_bias, by = "genres") %>% mutate(prediction = mu + b_i + b_g) %>%
+  .$prediction
+
+movie_genre_avg_rmse <- RMSE(test_set$rating, predicted_ratings)
+
+# movie_genre_avg_rmse [0.98]
+
+# Now we'll add user effects
+user_bias <- train_set %>% left_join(movie_bias, by='movieId') %>%
+  group_by(userId) %>% summarize(b_u = mean(rating - mu - b_i))
+
+# Graph of user effect
+user_bias %>% ggplot(aes(b_u)) + geom_histogram()
+
+predicted_ratings <- test_set %>% left_join(movie_bias, by='movieId') %>%
+  left_join(user_bias, by='userId') %>% mutate(prediction = mu + b_i + b_u) %>% .$prediction
+
+movie_user_rmse <- RMSE(test_set$rating, predicted_ratings)
+
+# movie_user_rmse [0.86]
+
+rmse_results <- bind_rows(rmse_results, data_frame(method = "Movie + User Effects Model", 
+                                                   RMSE = movie_user_rmse))
+rmse_results %>% knitr::kable()
+
+## Regularization
+
+# TODO: add rationale for regularization
+lambda <- 3
+mu <- mean(train_set$rating)
+>>>>>>> b91d7b0115820866324f7ffe8767a28b3989044e
 movie_reg_avgs <- train_set %>%
   group_by(movieId) %>%
   summarize(b_i = sum(rating - mu)/(n()+lambda), n_i = n())
 
+<<<<<<< HEAD
 # we can see the effect by plotting the original and regularized b_i by number of ratings
 # movies with fewer ratings are normalized towards 0 b_i
+=======
+>>>>>>> b91d7b0115820866324f7ffe8767a28b3989044e
 data_frame(original = movie_bias$b_i, 
            regularlized = movie_reg_avgs$b_i, 
            n = movie_reg_avgs$n_i) %>%
@@ -209,7 +295,10 @@ data_frame(original = movie_bias$b_i,
   geom_point(shape=1, alpha=0.5)
 
 # Best 5 movies (Regularized)
+<<<<<<< HEAD
 # This matches IMDb's list much more closely!
+=======
+>>>>>>> b91d7b0115820866324f7ffe8767a28b3989044e
 train_set %>%
   dplyr::count(movieId) %>% 
   left_join(movie_reg_avgs) %>%
@@ -220,7 +309,10 @@ train_set %>%
   knitr::kable()
 
 # Worst 5 movies (Regularized)
+<<<<<<< HEAD
 # This also makes sense.  These are in wikipedia's list of worst movies
+=======
+>>>>>>> b91d7b0115820866324f7ffe8767a28b3989044e
 train_set %>%
   dplyr::count(movieId) %>% 
   left_join(movie_reg_avgs) %>%
@@ -230,6 +322,7 @@ train_set %>%
   slice(1:10) %>% 
   knitr::kable()
 
+<<<<<<< HEAD
 # If this is a more accurate picture of the best/worst movies, it should help minimze RMSE
 
 # use regularized movie bias in our estimate
@@ -254,11 +347,31 @@ sum_of_residuals <- train_set %>%
 rmses <- sapply(lambdas, function(l){
   predicted_ratings <- test_set %>%
     left_join(sum_of_residuals, by='movieId') %>%
+=======
+predicted_ratings <- test_set %>% 
+  left_join(movie_reg_avgs, by='movieId') %>%
+  mutate(pred = mu + b_i) %>%
+  .$pred
+
+movie_regularization_rmse <- RMSE(test_set$rating, predicted_ratings)
+
+lambdas <- seq(0, 10, 0.25)
+
+mu <- mean(train_set$rating)
+just_the_sum <- train_set %>%
+  group_by(movieId) %>%
+  summarize(s = sum(rating - mu), n_i = n())
+
+rmses <- sapply(lambdas, function(l){
+  predicted_ratings <- test_set %>%
+    left_join(just_the_sum, by='movieId') %>%
+>>>>>>> b91d7b0115820866324f7ffe8767a28b3989044e
     mutate(b_i = s/(n_i+l)) %>%
     mutate(pred = mu + b_i) %>%
     .$pred
   return(RMSE(predicted_ratings, test_set$rating))
 })
+<<<<<<< HEAD
 
 # Plotting the result shows us the lambda value that minimizes RMSE
 qplot(lambdas, rmses)  
@@ -299,11 +412,28 @@ rmses <- sapply(lambdas, function(l){
     group_by(movieId) %>%
     summarize(b_i = sum(rating - mu)/(n()+l))
   # regularized user effect
+=======
+qplot(lambdas, rmses)  
+lambdas[which.min(rmses)]
+
+# TODO: Rationale for user rating regularization - how many ratings does the average user have?
+edx %>% group_by(userId) %>% summarize(n_i = n()) %>% ggplot(aes(n_i)) + geom_histogram()
+
+lambdas <- seq(0, 10, 0.25)
+rmses <- sapply(lambdas, function(l){
+  mu <- mean(train_set$rating)
+  b_i <- train_set %>%
+    group_by(movieId) %>%
+    summarize(b_i = sum(rating - mu)/(n()+l))
+>>>>>>> b91d7b0115820866324f7ffe8767a28b3989044e
   b_u <- train_set %>% 
     left_join(b_i, by="movieId") %>%
     group_by(userId) %>%
     summarize(b_u = sum(rating - b_i - mu)/(n()+l))
+<<<<<<< HEAD
   # predicted rating
+=======
+>>>>>>> b91d7b0115820866324f7ffe8767a28b3989044e
   predicted_ratings <- 
     test_set %>% 
     left_join(b_i, by = "movieId") %>%
@@ -313,17 +443,25 @@ rmses <- sapply(lambdas, function(l){
   return(RMSE(predicted_ratings, test_set$rating))
 })
 
+<<<<<<< HEAD
 # plotting the results, we can see the best lambda is 5
 qplot(lambdas, rmses)
 
 best_lambda <- lambdas[which.min(rmses)]
 best_lambda
+=======
+qplot(lambdas, rmses)  
+
+lambda <- lambdas[which.min(rmses)]
+lambda
+>>>>>>> b91d7b0115820866324f7ffe8767a28b3989044e
 
 rmse_results <- bind_rows(rmse_results,
                           data_frame(method="Regularized Movie + User Effect Model",  
                                      RMSE = min(rmses)))
 rmse_results %>% knitr::kable()
 
+<<<<<<< HEAD
 # movie_and_user_regularization_rmse [0.8655] - This is the best result so far
 
 # Genre effect
@@ -430,3 +568,15 @@ qplot(lambdas, rmses)
 
 # This is our final RMSE
 min(rmses)
+=======
+# what if we did the average by genre?
+genre_bias <- train_set %>% group_by(genres) %>%
+  summarize(n = n(), b_g = mean(rating - mu))
+
+predicted_ratings <- test_set %>% left_join(movie_avgs, by='movieId') %>%
+  left_join(genre_bias, by='genres') %>% .$b_g + mu
+
+genre_avg_rmse <- RMSE(test_set$rating, predicted_ratings)
+
+# genre_avg_rmse [1.01] 
+>>>>>>> b91d7b0115820866324f7ffe8767a28b3989044e
