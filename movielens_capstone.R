@@ -206,14 +206,6 @@ rmse_results <- bind_rows(rmse_results, data_frame(method = "Movie Effects Model
                                                    RMSE = movie_avg_rmse))
 rmse_results %>% knitr::kable()
 
-predicted_ratings <- test_set %>% left_join(movie_bias, by = "movieId") %>%
-  left_join(genre_bias, by = "genres") %>% mutate(prediction = mu + b_i + b_g) %>%
-  .$prediction
-
-movie_genre_avg_rmse <- RMSE(test_set$rating, predicted_ratings)
-
-# movie_genre_avg_rmse [0.98]
-
 # Now we'll add user effects
 user_bias <- train_set %>% left_join(movie_bias, by='movieId') %>%
   group_by(userId) %>% summarize(b_u = mean(rating - mu - b_i))
