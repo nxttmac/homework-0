@@ -1,7 +1,7 @@
 ---
-title: "Movielens Ratings Prediction Project"
+title: "Predicting Movie Ratings"
 author: "Andrew Ertell"
-date: "9/13/2020"
+date: "10/21/2020"
 output:
   pdf_document: default
   html_document:
@@ -639,7 +639,7 @@ By incorporating bias into the prediction algorithm, and using regularization to
 ### Limitations & Future Work
 While this analysis considered three biases within the data, there are other  biases that could potentially be incorporated into the prediction algorithm to further reduce RMSE.  One example is the total number of ratings.
 
-```{r warning=FALSE}
+```{r message=FALSE, warning=FALSE}
 edx %>% 
 	group_by(movieId) %>%
 	summarize(n = n(),
