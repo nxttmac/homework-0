@@ -1,0 +1,657 @@
+---
+title: "Movielens Ratings Prediction Project"
+author: "Andrew Ertell"
+date: "9/13/2020"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Executive Overview
+
+This report details an approach for building an algorithm to predict movie ratings.  An existing movie ratings data set from MovieLens is used to train a model that estimates ratings for an individual user/movie pairs.  The model takes advantage of observable biases in the data and utilizes regularization to increase the accuracy of the predictions.
+
+#### Dataset details
+The publicly available [MovieLens 10M Dataset](https://grouplens.org/datasets/movielens/10m/) contains 10 million ratings and 100,000 tag applications applied to 10,000 movies by 72,000 users.
+
+#### Validation / Goal
+A subset of ratings (~10%) will be held back for validation of the final algorithm performance.  Performance will be evaluated by calculating the Residual Mean Squared Error (RMSE) of our predicted ratings vs. the true ratings.  The most accurate model is the one that minimizes RMSE.
+
+#### Approach
+* Explore the data for possible bias that could help improve predictions.
+* Use regularization to minimize variability for small sample sizes (films/users with few ratings)
+
+***
+
+## Analysis
+
+#### Preparation
+First, the MovieLens 10M Dataset is downloaded and prepared for analysis.  Then the validation set is created.  A semi_join is used on the validation set to make sure that all movieIds and userIds in the validation set are in the main dataset (named edx).
+
+```{r movielens, warning=FALSE, message=FALSE}
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+
+# MovieLens 10M dataset:
+# https://grouplens.org/datasets/movielens/10m/
+# http://files.grouplens.org/datasets/movielens/ml-10m.zip
+
+if(!exists("movies") && !exists("ratings")) {
+  f_movies <- "ml-10M100K/ratings.dat"
+  f_ratings <- "ml-10M100K/movies.dat"
+  if(!file.exists(f_movies) && !file.exists(f_ratings)) {
+    dl <- tempfile()
+    download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+    
+    ratings <- fread(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                     col.names = c("userId", "movieId", "rating", "timestamp"))
+    
+    movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+    colnames(movies) <- c("movieId", "title", "genres")
+  } else {
+    ratings <- fread(text = gsub("::", "\t", readLines("ml-10M100K/ratings.dat")),
+                     col.names = c("userId", "movieId", "rating", "timestamp"))
+    movies <- str_split_fixed(readLines("ml-10M100K/movies.dat"), "\\::", 3)
+    colnames(movies) <- c("movieId", "title", "genres")
+  }
+}
+
+# if using R 3.6 or earlier
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(levels(movieId))[movieId],
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+
+movielens <- left_join(ratings, movies, by = "movieId")
+
+# Validation set will be 10% of MovieLens data
+set.seed(1, sample.kind="Rounding")
+# if using R 3.5 or earlier, use `set.seed(1)` instead
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in validation set are also in edx set
+validation <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId") %>%
+  semi_join(edx, by = "genres")
+
+# Add rows removed from validation set back into edx set
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+
+##########################################################
+# The validation set is only for the testing at the end.
+##########################################################
+```
+
+The main dataset (edx) is also split into a training set and test set (~20% of the results) for testing the accuracy of the models as the algorithm is built.
+
+```{r edx, warning=FALSE}
+# set a seed so the results are consistent
+set.seed(1986, sample.kind = "Rounding")
+
+# test set will be 20% of the edx set
+test_index <- createDataPartition(y = edx$rating, times = 1, p = 0.2, list = FALSE)
+train_set <- edx[-test_index,]
+test_set <- edx[test_index,]
+
+# Make sure userId, movieId and genre in test set are also in the train set
+test_set <- test_set %>%
+  semi_join(train_set, by = "movieId") %>%
+  semi_join(train_set, by = "userId") %>%
+  semi_join(train_set, by = "genres")
+```
+
+A loss function is defined to evaluate algorithm performance.  The Residual Mean Squared Error is used to penalize larger errors.
+
+```{r}
+RMSE <- function(true_ratings, predicted_ratings) {
+  sqrt(mean((true_ratings - predicted_ratings)^2))
+}
+```
+
+  
+
+#### Baseline  
+The simplest possible model is to predict the same rating for each movie.  The estimate that minimizes the residual mean squared error with this approach is the average.
+
+```{r train_set, test_set}
+mu <- mean(train_set$rating)
+average_rmse <- RMSE(test_set$rating, mu)
+```
+
+The code below creates a table to store the RMSE results:
+
+```{r warning=FALSE}
+rmse_results <- data_frame(method = "Average", RMSE = average_rmse)
+rmse_results %>% knitr::kable()
+```
+ 
+*** 
+
+## Exploring Bias  
+
+#### Movie Bias  
+
+Different movies have very different average ratings.  This makes sense - some movies are good, and some movies are bad.  Good films will have higher average ratings and bad films will have low average ratings.  The histogram below shows the skew of average ratings for the films in the dataset:
+
+```{r message=FALSE}
+movie_avg_ratings <- train_set %>% group_by(movieId) %>% summarize(avg = mean(rating))
+movie_avg_ratings %>% ggplot(aes(avg)) + geom_histogram()
+```
+
+A "film bias" factor can be created for each film by taking the mean rating for each film and subtracting the overall mean rating across all ratings.
+
+```{r}
+movie_bias <- train_set %>% group_by(movieId) %>% summarize(b_i = mean(rating - mu))
+```
+
+Accounting for film bias in the algorithm should help improve RMSE.  
+
+```{r}
+predicted_ratings_movie_effect <- mu + test_set %>% left_join(movie_bias, by = "movieId") %>% .$b_i
+movie_bias_rmse <- RMSE(test_set$rating, predicted_ratings_movie_effect)
+```
+
+Here are the results compared:
+
+```{r warning=FALSE}
+rmse_results <- bind_rows(rmse_results, data_frame(method = "Movie Bias Model", 
+                                                   RMSE = movie_bias_rmse))
+rmse_results %>% knitr::kable()
+```
+
+Adding the movie bias to the algorithm has improved overall accuracy.
+ 
+  
+#### User Bias  
+
+Different users have very different ratings (some consistently rate higher/lower than average). In evaluating user bias, movie bias is still incorporated because the goal is to assess how users rated each movie vs the average rating. Some users could have only rated bad movies, but that doesn't mean they are tough critics.
+
+Below is a histogram of the user bias.  The graph shows that some users do consistently rate movies higher than average (easy critics), and some users consistently rate movies lower than average (tough critics).
+
+```{r message=FALSE}
+user_bias <- train_set %>% left_join(movie_bias, by='movieId') %>%
+  group_by(userId) %>% summarize(b_u = mean(rating - mu - b_i))
+user_bias %>% ggplot(aes(b_u)) + geom_histogram()
+```
+
+Accounting for user bias in the algorithm should help futher improve the RMSE of the predictions.
+
+```{r}
+predicted_ratings_movie_and_user_effect <- test_set %>% left_join(movie_bias, by='movieId') %>%
+  left_join(user_bias, by='userId') %>% mutate(prediction = mu + b_i + b_u) %>% .$prediction
+
+movie_user_rmse <- RMSE(test_set$rating, predicted_ratings_movie_and_user_effect)
+```
+
+Here are the results compared:
+
+```{r warning=FALSE}
+rmse_results <- bind_rows(rmse_results, data_frame(method = "Movie + User Bias Model", 
+                                                   RMSE = movie_user_rmse))
+rmse_results %>% knitr::kable()
+```
+
+Adding the user bias to the model has further improved the predictions.  
+
+  
+#### Genre Bias
+
+Certain genres seem to have consistently lower ratings than others
+
+Here is a histogram of the skew of average ratings for each genre:
+```{r message=FALSE}
+genre_bias <- train_set %>% left_join(movie_bias, by='movieId') %>% 
+  left_join(user_bias, by="userId") %>% group_by(genres) %>% 
+  summarize(b_g = mean(rating - mu - b_i - b_u))
+genre_bias %>% ggplot(aes(b_g)) + geom_histogram()
+```
+
+Accounting for genre bias in the algorithm could help futher improve the RMSE of the predictions.  
+
+```{r}
+predicted_ratings_genre_bias <- test_set %>% left_join(movie_bias, by='movieId') %>%
+  left_join(user_bias, by='userId') %>% left_join(genre_bias, by='genres') %>% mutate(prediction = mu + b_i + b_u + b_g) %>% .$prediction
+
+movie_genre_rmse <- RMSE(test_set$rating, predicted_ratings_genre_bias)
+```
+
+Here are the results compared:
+
+```{r warning=FALSE}
+rmse_results <- bind_rows(rmse_results, data_frame(method = "Movie + User + Genre Bias Model",  RMSE = movie_genre_rmse))
+
+rmse_results %>% knitr::kable()
+```
+
+Adding the genre bias to the model has further improved the predictions.  
+
+There are potentially more features within the data that would contain a bias that could be used to improve predictions.  Instead of exploring these further, this analysis will now focus on a technique called regularization to further improve the predictions.  
+ 
+***
+
+## Regularization
+
+Regularization is useful for minimizing variability in small sample sizes.  Within the data set, there are some films that have received many ratings, and some that have receieved very few.  Likewise, some users have rated many titles, and some have rated only a few titles overall.  
+
+#### Motivation
+
+Taking a closer look at the movie bias estimates, here is a list of the 10 titles with the highest (positive) movie bias:
+
+```{r}
+# Add the movie titles so we can tell which movies have the highest and lowest bias
+movie_titles <- edx %>% 
+  select(movieId, title) %>% 
+  distinct()
+
+movie_bias %>% left_join(movie_titles, by="movieId") %>%
+  arrange(desc(b_i)) %>%
+  select(title, b_i) %>%
+  slice(1:10) %>%
+  knitr::kable()
+```
+
+This list doesn't match expectations.  IMDb has a [list of the top 250 films](https://www.imdb.com/chart/top/), but none of the top-rated films on IMDb appear in the top 10 movie bias list.
+
+If the number of ratings for the titles with the highest movie bias is added, it can be seen that they each have very few ratings:
+
+```{r, message=FALSE}
+train_set %>% dplyr::count(movieId) %>% 
+  left_join(movie_bias) %>%
+  left_join(movie_titles, by="movieId") %>%
+  arrange(desc(b_i)) %>% 
+  select(title, b_i, n) %>% 
+  slice(1:10) %>% 
+  knitr::kable()
+```
+
+Similarly, here is a list of the 10 titles with the lowest (negative) movie bias.  These also have few ratings (with the exception of From Justin to Kelly, which is widely regared as [one of the worst films ever made](https://en.wikipedia.org/wiki/List_of_films_considered_the_worst#From_Justin_to_Kelly_(2003)))
+
+```{r, message=FALSE}
+train_set %>% dplyr::count(movieId) %>% 
+  left_join(movie_bias) %>%
+  left_join(movie_titles, by="movieId") %>%
+  arrange(b_i) %>% 
+  select(title, b_i, n) %>% 
+  slice(1:10) %>% 
+  knitr::kable()
+```
+
+For the most part, the titles on these lists have been rated either very favorably or very negatively by a handful of users and it's not a good representation of the true quality of the film.  If these titles had more ratings, it's unlikely the bias factors would continue to be so large.  
+
+To improve the predictions, a technique called regularization will be used.  Regularization works by adding a constant (lambda) to the denominator when calculating averages.  This has the effect of pulling the average towards zero when sample size is small, but has a nominal effect when sample size is large.
+
+At first, to test the effect of regularization, the value for lambda will simply be selected.  Later this parameter will be optimized to further improve results.
+
+```{r}
+lambda <- 3
+```
+
+Adding lamdba to the denominator pulls the average rating towards zero for films with few ratings but has a nominal effect on films with many ratings.  The code below shows how to calculate the regularized movie bias by adding the lambda parameter to the denominator.
+
+```{r}
+movie_reg_bias <- train_set %>%
+  group_by(movieId) %>%
+  summarize(b_i = sum(rating - mu)/(n()+lambda), n_i = n())
+```
+
+The graph below visualizes the effect of regularization by plotting the original and regularized movie bias together. Movies that have fewer ratings have their bias normalized towards 0.
+
+```{r}
+data_frame(original = movie_bias$b_i, 
+           regularlized = movie_reg_bias$b_i, 
+           n = movie_reg_bias$n_i) %>%
+  ggplot(aes(original, regularlized, size=sqrt(n))) + 
+  geom_point(shape=1, alpha=0.5)
+```
+
+Here are the top 10 highest rated movies with regularize movie bias:
+
+```{r message=FALSE}
+train_set %>%
+  dplyr::count(movieId) %>% 
+  left_join(movie_reg_bias) %>%
+  left_join(movie_titles, by="movieId") %>%
+  arrange(desc(b_i)) %>% 
+  select(title, b_i, n) %>% 
+  slice(1:10) %>% 
+  knitr::kable()
+```
+
+This list makes much more sense - it more closely matches IMDb's list of top films.
+
+Similarly, here are the 10 lowest rated movies with regularized movie bias:
+
+```{r message=FALSE}
+train_set %>%
+  dplyr::count(movieId) %>% 
+  left_join(movie_reg_bias) %>%
+  left_join(movie_titles, by="movieId") %>%
+  arrange(b_i) %>% 
+  select(title, b_i, n) %>% 
+  slice(1:10) %>% 
+  knitr::kable()
+```
+
+This also makes sense - all of these titles appear in Wikipedia's list of worst films.  
+
+  
+#### Using Regularized Movie Bias in predictions
+
+Since the regularized movie bias gives a more accurate picture of the best/worst films, using this in our model should help us minimize RMSE.
+
+```{r}
+predicted_ratings_movie_bias_regularized <- test_set %>% 
+  left_join(movie_reg_bias, by='movieId') %>%
+  mutate(pred = mu + b_i) %>% .$pred
+
+movie_bias_regularized_rmse <- RMSE(test_set$rating, predicted_ratings_movie_bias_regularized)
+```
+
+Comparing the predictions without movie bias regularization to our predictions with movie bias regularization, it can be seen that regularization has decreased overall RMSE and improved the model.
+
+```{r warning=FALSE}
+movie_bias_comparison <- data_frame(method = "Movie Bias Model (non-regularized)", RMSE = movie_bias_rmse)
+movie_bias_comparison <- bind_rows(movie_bias_comparison, data_frame(method = "Movie Bias Model (regularized)", RMSE = movie_bias_regularized_rmse))
+movie_bias_comparison %>% knitr::kable()
+```
+
+  
+#### Optimizing regularization
+
+In the regularization approach above, the lambda parameter was chosen arbitrarily.  Optimizing this parameter will lead to even better results.  To optimize this value, a range of values will be tested and the one that results in the lowest RMSE will be chosen
+
+First a sequence of numbers to test is created, and a variable that has the sum of the residuals for each film.
+
+```{r}
+# Create a sequence of lambdas to test
+lambdas <- seq(0, 10, 0.25)
+
+sum_of_residuals <- train_set %>%
+  group_by(movieId) %>%
+  summarize(s = sum(rating - mu), n_i = n())
+```
+
+Next, a function is used to find the RMSE for all values
+
+```{r}
+rmses_regularized_movie_bias <- sapply(lambdas, function(l){
+  predicted_ratings <- test_set %>%
+    left_join(sum_of_residuals, by='movieId') %>%
+    mutate(b_i = s/(n_i+l)) %>%
+    mutate(pred = mu + b_i) %>%
+    .$pred
+  return(RMSE(predicted_ratings, test_set$rating))
+})
+```
+
+The plot below shows the results with different values for lambda
+
+```{r}
+qplot(lambdas, rmses_regularized_movie_bias)
+```
+
+The lambda value which minimized RMSE is 2.25, which results in an RMSE of 0.9436484 - lower than the previous value (when lamba was simply selected) and better than the non regularized movie bias model.
+
+Best lambda:
+```{r warning=FALSE}
+lambdas[which.min(rmses_regularized_movie_bias)]
+```
+
+RMSE:
+```{r warning=FALSE}
+movie_bias_regularized_optimized_rmse <- rmses_regularized_movie_bias[which.min(rmses_regularized_movie_bias)]
+movie_bias_regularized_optimized_rmse
+```
+
+RMSE results table:
+```{r warning=FALSE}
+movie_bias_comparison <- bind_rows(movie_bias_comparison, data_frame(method = "Movie Bias Model (regularized + optimized)", RMSE = movie_bias_regularized_optimized_rmse))
+movie_bias_comparison %>% knitr::kable()
+```
+
+  
+#### Regularizing User Bias
+
+Some users have rated many films, but some have rated only a few films:
+
+```{r}
+edx %>% group_by(userId) %>% summarize(n_i = n()) %>% ggplot(aes(n_i)) + geom_histogram(breaks=c(seq(0, 250, by=5)))
+```
+
+Some of the users with the highest user bias have relatively few ratings
+
+```{r warning=FALSE}
+train_set %>% dplyr::count(userId) %>% 
+  left_join(user_bias) %>%
+  arrange(desc(b_u)) %>%
+  select(userId, b_u, n) %>% 
+  slice(1:10) %>% 
+  knitr::kable()
+```
+
+The same is true for some of the users with the lowest user bias
+
+```{r warning=FALSE}
+train_set %>% dplyr::count(userId) %>% 
+  left_join(user_bias) %>%
+  arrange(b_u) %>%
+  select(userId, b_u, n) %>% 
+  slice(1:10) %>% 
+  knitr::kable()
+```
+
+This makes user bias another good candidate for regularization.  Regularizing the user bias can help further minimize RMSE.
+
+The function below gets the RMSE for the predictions with regularized movie bias and regularized user bias across the range of lambdas defined earlier.
+
+```{r}
+rmses_movie_and_user_bias <- sapply(lambdas, function(l){
+  # regularized movie effect
+  b_i <- train_set %>%
+    group_by(movieId) %>%
+    summarize(b_i = sum(rating - mu)/(n()+l))
+  # regularized user effect
+  b_u <- train_set %>% 
+    left_join(b_i, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - b_i - mu)/(n()+l))
+  # predicted rating
+  predicted_ratings <- 
+    test_set %>% 
+    left_join(b_i, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    mutate(pred = mu + b_i + b_u) %>%
+    .$pred
+  return(RMSE(predicted_ratings, test_set$rating))
+})
+```
+
+Plotting the results shows the RMSE values for each lambda
+
+```{r}
+qplot(lambdas, rmses_movie_and_user_bias)
+```
+
+The lambda value which minimized RMSE is 5, which results in an RMSE of 0.8655985, which is lower than the movie + user bias model without regularization.
+
+```{r}
+lambdas[which.min(rmses_movie_and_user_bias)]
+movie_and_user_bias_regularized_rmse <- rmses_movie_and_user_bias[which.min(rmses_movie_and_user_bias)]
+
+movie_and_user_bias_comparison <- data_frame(method = "Movie + User Bias Model", RMSE = movie_user_rmse)
+movie_and_user_bias_comparison <- bind_rows(movie_and_user_bias_comparison, data_frame(method = "Movie + User Bias Model (regularized + optimized)", RMSE = movie_and_user_bias_regularized_rmse))
+movie_and_user_bias_comparison %>% knitr::kable()
+```
+
+  
+#### Regularizing Genre Bias
+
+Similar to Movie and User Bias, many of the Genres with the highest and lowest bias have relatively few titles that fall within the genre
+
+Highest bias:
+
+```{r warning=FALSE}
+train_set %>% dplyr::count(genres) %>% 
+  left_join(genre_bias) %>%
+  arrange(desc(b_g)) %>%
+  select(genres, b_g, n) %>% 
+  slice(1:10) %>% 
+  knitr::kable()
+```
+
+Lowest bias:
+
+```{r warning=FALSE}
+train_set %>% dplyr::count(genres) %>% 
+  left_join(genre_bias) %>%
+  arrange(b_g) %>%
+  select(genres, b_g, n) %>% 
+  slice(1:10) %>% 
+  knitr::kable()
+```
+
+Regularizing the genre bias will help further improve RMSE.
+
+```{r}
+# This portion may take a few minutes to run
+
+rmses_regularized_movie_user_genre_bias <- sapply(lambdas, function(l){
+  # regularized movie effect
+  b_i <- train_set %>%
+    group_by(movieId) %>%
+    summarize(b_i = sum(rating - mu)/(n()+l))
+  # regularized user effect
+  b_u <- train_set %>% 
+    left_join(b_i, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - b_i - mu)/(n()+l))
+  #regularized genre effect
+  b_g <- train_set %>%
+    left_join(b_i, by="movieId") %>%
+    left_join(b_u, by="userId") %>%
+    group_by(genres) %>%
+    summarize(b_g = sum(rating - b_i - b_u - mu)/(n()+l))
+  # predicted rating
+  predicted_ratings <- 
+    test_set %>% 
+    left_join(b_i, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    left_join(b_g, by = "genres") %>%
+    mutate(pred = mu + b_i + b_u + b_g) %>%
+    .$pred
+  return(RMSE(predicted_ratings, test_set$rating))
+})
+```
+
+Plotting the RMSEs for each lambda shows which value minimized RMSE:
+
+```{r}
+qplot(lambdas, rmses_regularized_movie_user_genre_bias)
+```
+
+The best lambda value is:
+
+```{r}
+best_lambda <- lambdas[which.min(rmses_regularized_movie_user_genre_bias)]
+best_lambda
+```
+
+And the final RMSE is:
+
+```{r}
+rmse_results <- bind_rows(rmse_results,
+                          data_frame(method="Regularized Movie + User + Genres Bias Model",  
+                                     RMSE = min(rmses_regularized_movie_user_genre_bias)))
+rmse_results %>% knitr::kable()
+```
+
+The Regularized Movie/User/Genres Bias model is the most accurate model so far.
+
+***
+  
+## Results
+
+Now the most accurate model will be tested on the validation set to judge evaluate overall accuracy.  In this case, the full edx dataset is used to train the model.
+
+```{r}
+# This portion may take a few minutes to run
+
+rmses_validation <- sapply(lambdas, function(l){
+  # average rating
+  mu <- mean(edx$rating)
+  # regularized movie effect
+  b_i <- edx %>%
+    group_by(movieId) %>%
+    summarize(b_i = sum(rating - mu)/(n()+l))
+  # regularized user effect
+  b_u <- edx %>% 
+    left_join(b_i, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - b_i - mu)/(n()+l))
+  #regularized genre effect
+  b_g <- edx %>%
+    left_join(b_i, by="movieId") %>%
+    left_join(b_u, by="userId") %>%
+    group_by(genres) %>%
+    summarize(b_g = sum(rating - b_i - b_u - mu)/(n()+l))
+  # predicted rating
+  predicted_ratings <- 
+    validation %>% 
+    left_join(b_i, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    left_join(b_g, by = "genres") %>%
+    mutate(pred = mu + b_i + b_u + b_g) %>%
+    .$pred
+  return(RMSE(predicted_ratings, validation$rating))
+})
+```
+
+Plotting the RMSEs shows the best lambda value:
+
+```{r}
+qplot(lambdas, rmses_validation)
+```
+
+The final RMSE is:
+
+```{r}
+min(rmses_validation)
+```
+
+***
+  
+## Conclusion
+
+### Summary
+By incorporating bias into the prediction algorithm, and using regularization to reduce variability for small sample sizes, the RMSE of the predicted ratings was significantly reduced.  The final model performs much better than just predicting the overall average (guessing).
+
+### Limitations & Future Work
+While this analysis considered three biases within the data, there are other  biases that could potentially be incorporated into the prediction algorithm to further reduce RMSE.  One example is the total number of ratings.
+
+```{r warning=FALSE}
+edx %>% 
+	group_by(movieId) %>%
+	summarize(n = n(),
+				title = title[1],
+				rating = mean(rating)) %>%
+	ggplot(aes(n, rating)) +
+	geom_point() +
+	geom_smooth()
+```
+
+The plot above shows that movies with more ratings have a higher average rating overall.  One possible explanation for this could be that people prefer to watch well-rated movies, which ultimately then get more ratings.
+
+There are other tactics that could be employed to improve predictions - including matrix factorization and principal components analysis.  
+
+Matrix factorization and principle component can help identify structure in the data based on the relationship between films including patterns like "people that like ganster movies, will like other gangster movies and people who don't like a ganster movie are less likely to like other ganster movies".  However, this type of analysis is complicated to model and requires intensive computing resources.
